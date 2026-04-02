@@ -23,4 +23,23 @@ ollama pull "$OLLAMA_CHAT_MODEL"
 printf '[ollama-init] pulling embedding model: %s\n' "$OLLAMA_EMBED_MODEL"
 ollama pull "$OLLAMA_EMBED_MODEL"
 
-printf '[ollama-init] model pull complete\n'
+printf '[ollama-init] verifying both models are available in Ollama...\n'
+attempt=1
+max_attempts=60
+while [ $attempt -le $max_attempts ]; do
+  tags=$(ollama list 2>/dev/null || echo "")
+  chat_ready=$(echo "$tags" | grep -q "^$(echo "$OLLAMA_CHAT_MODEL" | cut -d: -f1)" && echo "yes" || echo "no")
+  embed_ready=$(echo "$tags" | grep -q "^$(echo "$OLLAMA_EMBED_MODEL" | cut -d: -f1)" && echo "yes" || echo "no")
+  
+  if [ "$chat_ready" = "yes" ] && [ "$embed_ready" = "yes" ]; then
+    printf '[ollama-init] both models verified ready\n'
+    exit 0
+  fi
+  
+  printf '[ollama-init] models not yet visible, retry #%s (chat=%s, embed=%s)\n' "$attempt" "$chat_ready" "$embed_ready"
+  attempt=$((attempt + 1))
+  sleep 5
+done
+
+printf '[ollama-init] warning: timeout waiting for models to be visible, proceeding anyway\n'
+exit 0

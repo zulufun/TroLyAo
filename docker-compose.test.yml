@@ -76,7 +76,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "python -c \"import json, urllib.request; d = json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/runtime')); raise SystemExit(0 if d.get('status') == 'ready' else 1)\"",
+          "curl -s http://127.0.0.1:8000/api/runtime | grep -q '\"status\":\"ready\"' && exit 0 || exit 1",
         ]
       interval: 10s
       timeout: 5s
