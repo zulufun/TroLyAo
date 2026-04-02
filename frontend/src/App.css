@@ -1,21 +1,58 @@
-.app {
-  width: min(980px, 94vw);
+.app-shell {
+  width: min(1220px, 96vw);
   margin: 0 auto;
-  padding: 24px 0 36px;
+  padding: 20px 0 28px;
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr);
+  gap: 14px;
 }
 
-.app-header {
-  margin-bottom: 18px;
+.sidebar {
+  background: linear-gradient(180deg, #0d2035 0%, #102d4f 100%);
+  color: #ebf1f9;
+  border-radius: 18px;
+  padding: 18px;
+  min-height: calc(100vh - 40px);
+  position: sticky;
+  top: 16px;
 }
 
-.app-header h1 {
+.brand h1 {
   margin: 0;
-  font-size: clamp(2rem, 4vw, 2.8rem);
+  font-size: 1.5rem;
 }
 
-.app-header p {
+.brand p {
   margin-top: 8px;
-  color: #334155;
+  color: #b9c8dc;
+  line-height: 1.45;
+}
+
+.menu {
+  margin-top: 22px;
+  display: grid;
+  gap: 8px;
+}
+
+.menu-item {
+  text-align: left;
+  border: 1px solid rgba(215, 229, 247, 0.18);
+  background: rgba(255, 255, 255, 0.02);
+  color: #ebf1f9;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.menu-item.active {
+  background: #33a1b7;
+  border-color: #33a1b7;
+  color: #05222a;
+}
+
+.workspace {
+  min-width: 0;
 }
 
 .panel {
@@ -56,6 +93,49 @@
 .status {
   margin-top: 10px;
   color: #1f2937;
+}
+
+.doc-list {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.doc-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid rgba(12, 30, 56, 0.12);
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.doc-item h3 {
+  margin: 0 0 6px;
+  color: #0f172a;
+  font-size: 1rem;
+}
+
+.doc-item p {
+  margin: 2px 0;
+  color: #334155;
+}
+
+.doc-item button {
+  border: none;
+  border-radius: 8px;
+  background: #d6e8f7;
+  color: #0b2f52;
+  padding: 9px 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.chat-note {
+  margin: 0 0 10px;
+  color: #334155;
 }
 
 .message-list {
@@ -112,6 +192,24 @@
 }
 
 @media (max-width: 780px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: static;
+    min-height: auto;
+  }
+
+  .menu {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .doc-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
   .message-list {
     min-height: 260px;
   }

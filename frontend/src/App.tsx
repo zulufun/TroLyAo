@@ -20,6 +20,16 @@ type IngestResponse = {
   fileName?: string
 }
 
+type ViewMode = 'documents' | 'chat'
+
+type IndexedDocument = {
+  id: string
+  fileName: string
+  chunks: number
+  uploadedAt: string
+  status: string
+}
+
 const CHAT_WEBHOOK =
   import.meta.env.VITE_N8N_CHAT_WEBHOOK ?? 'http://localhost:5678/webhook/chat'
 const INGEST_WEBHOOK =
@@ -28,9 +38,11 @@ const INGEST_WEBHOOK =
 
 function App() {
   const sessionId = useMemo(() => crypto.randomUUID(), [])
+  const [viewMode, setViewMode] = useState<ViewMode>('documents')
   const [question, setQuestion] = useState('')
   const [uploadStatus, setUploadStatus] = useState('Chua tai file')
   const [loadingChat, setLoadingChat] = useState(false)
+  const [documents, setDocuments] = useState<IndexedDocument[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
@@ -62,10 +74,24 @@ function App() {
       const result = (await response.json()) as IngestResponse
       const chunkCount = result.chunks ?? 0
       setUploadStatus(`Da index ${chunkCount} chunks cho file ${file.name}`)
+      setDocuments((prev) => [
+        {
+          id: crypto.randomUUID(),
+          fileName: result.fileName ?? file.name,
+          chunks: chunkCount,
+          uploadedAt: new Date().toLocaleString('vi-VN'),
+          status: result.status ?? 'indexed',
+        },
+        ...prev,
+      ])
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
       setUploadStatus(`Upload loi: ${message}`)
     }
+  }
+
+  const removeDocument = (id: string) => {
+    setDocuments((prev) => prev.filter((item) => item.id !== id))
   }
 
   const onAskQuestion = async (event: FormEvent<HTMLFormElement>) => {
@@ -117,43 +143,98 @@ function App() {
   }
 
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1>Local RAG Chatbot</h1>
-        <p>React TSX + n8n + Ollama + Qdrant</p>
-      </header>
-
-      <section className="panel upload-panel">
-        <h2>Upload Excel vao kho tri thuc</h2>
-        <p>Ho tro .xlsx va .xls. n8n se tach du lieu, tao embedding va upsert vao Qdrant.</p>
-        <label className="file-btn">
-          Chon file Excel
-          <input type="file" accept=".xlsx,.xls" onChange={onUploadFile} />
-        </label>
-        <div className="status">{uploadStatus}</div>
-      </section>
-
-      <section className="panel chat-panel">
-        <h2>Chat voi du lieu da index</h2>
-        <div className="message-list">
-          {messages.map((message, index) => (
-            <div key={`${message.role}-${index}`} className={`message ${message.role}`}>
-              {message.text}
-            </div>
-          ))}
+    <main className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <h1>RAG Console</h1>
+          <p>React + n8n + Ollama + Qdrant</p>
         </div>
-
-        <form onSubmit={onAskQuestion} className="chat-form">
-          <input
-            value={question}
-            onChange={(event) => setQuestion(event.target.value)}
-            placeholder="Dat cau hoi tu tai lieu Excel da upload"
-            disabled={loadingChat}
-          />
-          <button type="submit" disabled={loadingChat}>
-            {loadingChat ? 'Dang tra loi...' : 'Hoi'}
+        <nav className="menu">
+          <button
+            className={viewMode === 'documents' ? 'menu-item active' : 'menu-item'}
+            onClick={() => setViewMode('documents')}
+            type="button"
+          >
+            Quan ly tai lieu
           </button>
-        </form>
+          <button
+            className={viewMode === 'chat' ? 'menu-item active' : 'menu-item'}
+            onClick={() => setViewMode('chat')}
+            type="button"
+          >
+            Hoi dap RAG
+          </button>
+        </nav>
+      </aside>
+
+      <section className="workspace">
+        {viewMode === 'documents' && (
+          <>
+            <section className="panel upload-panel">
+              <h2>Quan ly tai lieu cho RAG</h2>
+              <p>
+                Upload file Excel de n8n ingest, tao embedding va luu vao Qdrant.
+                File goc nen luu tai /data/excel trong n8n de co the re-index.
+              </p>
+              <label className="file-btn">
+                Chon file Excel
+                <input type="file" accept=".xlsx,.xls" onChange={onUploadFile} />
+              </label>
+              <div className="status">{uploadStatus}</div>
+            </section>
+
+            <section className="panel">
+              <h2>Danh sach tai lieu da index</h2>
+              {documents.length === 0 ? (
+                <p>Chua co tai lieu nao duoc index trong phien lam viec nay.</p>
+              ) : (
+                <div className="doc-list">
+                  {documents.map((doc) => (
+                    <article key={doc.id} className="doc-item">
+                      <div>
+                        <h3>{doc.fileName}</h3>
+                        <p>Chunks: {doc.chunks}</p>
+                        <p>Thoi gian: {doc.uploadedAt}</p>
+                        <p>Trang thai: {doc.status}</p>
+                      </div>
+                      <button type="button" onClick={() => removeDocument(doc.id)}>
+                        An khoi danh sach
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {viewMode === 'chat' && (
+          <section className="panel chat-panel">
+            <h2>Hoi dap voi tri thuc RAG</h2>
+            <p className="chat-note">
+              n8n se truy xuat tu Qdrant collection rag_docs de tao context tra loi.
+            </p>
+            <div className="message-list">
+              {messages.map((message, index) => (
+                <div key={`${message.role}-${index}`} className={`message ${message.role}`}>
+                  {message.text}
+                </div>
+              ))}
+            </div>
+
+            <form onSubmit={onAskQuestion} className="chat-form">
+              <input
+                value={question}
+                onChange={(event) => setQuestion(event.target.value)}
+                placeholder="Dat cau hoi tu tai lieu Excel da upload"
+                disabled={loadingChat}
+              />
+              <button type="submit" disabled={loadingChat}>
+                {loadingChat ? 'Dang tra loi...' : 'Hoi'}
+              </button>
+            </form>
+          </section>
+        )}
       </section>
     </main>
   )
