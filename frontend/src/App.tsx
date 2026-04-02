@@ -133,6 +133,25 @@ function App() {
     }
   }
 
+  const reindexDocument = async (id: string) => {
+    setUploadStatus('Dang re-index tai lieu...')
+    try {
+      const response = await fetch(`${API_BASE}/api/documents/${id}/reindex`, {
+        method: 'POST',
+      })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(errorText || 'Khong re-index duoc tai lieu')
+      }
+
+      await loadDocuments()
+      setUploadStatus('Re-index thanh cong')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      setUploadStatus(`Re-index loi: ${message}`)
+    }
+  }
+
   const suggestDocuments = async () => {
     const incident = question.trim()
     if (!incident) {
@@ -289,9 +308,14 @@ function App() {
                           <p>Su co mau: {doc.incidentKeywords.slice(0, 4).join(', ')}</p>
                         )}
                       </div>
-                      <button type="button" onClick={() => removeDocument(doc.id)}>
-                        Xoa tai lieu
-                      </button>
+                      <div className="doc-actions">
+                        <button type="button" onClick={() => reindexDocument(doc.id)}>
+                          Re-index
+                        </button>
+                        <button type="button" onClick={() => removeDocument(doc.id)}>
+                          Xoa tai lieu
+                        </button>
+                      </div>
                     </article>
                   ))}
                 </div>

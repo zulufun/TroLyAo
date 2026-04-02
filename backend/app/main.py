@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, Filter, MatchAny, PointStruct, VectorParams
 from qdrant_client.models import FieldCondition
+from qdrant_client.models import FilterSelector
 
 DATA_ROOT = Path(os.getenv("DOC_DATA_ROOT", "/data"))
 EXCEL_DIR = DATA_ROOT / "excel"
@@ -25,8 +26,8 @@ DB_PATH = DATA_ROOT / "documents.db"
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "rag_incident_docs")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct-q4_K_M")
-OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:3b-instruct-q4_K_M")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
 app = FastAPI(title="RAG Document Backend", version="1.0.0")
 
@@ -69,6 +70,28 @@ def normalize_text(text: str) -> str:
     text = re.sub(r"[^a-z0-9\s]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def read_cell(row: dict[str, Any], aliases: list[str]) -> str:
+    normalized_aliases = {normalize_text(alias) for alias in aliases}
+    for key, value in row.items():
+        if key.startswith("__"):
+            continue
+        if normalize_text(str(key)) in normalized_aliases:
+            return str(value).strip()
+    return ""
+
+
+def canonicalize_row(row: dict[str, Any]) -> dict[str, str]:
+    return {
+        "incident": read_cell(row, ["Sự cố", "Su co", "Incident"]),
+        "scenario": read_cell(row, ["Trường hợp", "Truong hop", "Case", "Scenario"]),
+        "server": read_cell(row, ["Server"]),
+        "account": read_cell(row, ["Account"]),
+        "symptom": read_cell(row, ["Dấu hiện", "Dau hien", "Symptom", "Signal"]),
+        "resolution": read_cell(row, ["Cách xử lý", "Cach xu ly", "Resolution", "Fix"]),
+        "exception": read_cell(row, ["Ngoại lệ", "Ngoai le", "Exception"]),
+    }
 
 
 def get_conn() -> sqlite3.Connection:
@@ -174,28 +197,31 @@ def ensure_qdrant_collection(client: QdrantClient, embedder: OllamaEmbeddings) -
 
 
 def build_row_text(row: dict[str, Any]) -> str:
-    preferred_order = [
-        "Sự cố",
-        "Trường hợp",
-        "Server",
-        "Account",
-        "Dấu hiện",
-        "Cách xử lý",
-        "Ngoại lệ",
+    canonical = canonicalize_row(row)
+    ordered = [
+        ("Sự cố", canonical["incident"]),
+        ("Trường hợp", canonical["scenario"]),
+        ("Server", canonical["server"]),
+        ("Account", canonical["account"]),
+        ("Dấu hiện", canonical["symptom"]),
+        ("Cách xử lý", canonical["resolution"]),
+        ("Ngoại lệ", canonical["exception"]),
     ]
 
-    items: list[str] = []
-    used = set()
-
-    for key in preferred_order:
-        if key in row and str(row[key]).strip():
-            items.append(f"{key}: {str(row[key]).strip()}")
-            used.add(key)
+    items = [f"{label}: {value}" for label, value in ordered if value]
 
     for key, value in row.items():
-        if key in used or key.startswith("__"):
+        if key.startswith("__"):
             continue
-        if str(value).strip():
+        if str(value).strip() and normalize_text(str(key)) not in {
+            "su co",
+            "truong hop",
+            "server",
+            "account",
+            "dau hien",
+            "cach xu ly",
+            "ngoai le",
+        }:
             items.append(f"{key}: {str(value).strip()}")
 
     return " | ".join(items)
@@ -216,7 +242,10 @@ def index_document_to_qdrant(
     delete_filter = Filter(
         must=[FieldCondition(key="documentId", match=MatchAny(any=[document_id]))]
     )
-    client.delete(collection_name=QDRANT_COLLECTION, points_selector=delete_filter)
+    client.delete(
+        collection_name=QDRANT_COLLECTION,
+        points_selector=FilterSelector(filter=delete_filter),
+    )
 
     texts: list[str] = []
     metadatas: list[dict[str, Any]] = []
@@ -224,6 +253,7 @@ def index_document_to_qdrant(
         text = build_row_text(row)
         if not text:
             continue
+        canonical = canonicalize_row(row)
         texts.append(text)
         metadatas.append(
             {
@@ -231,7 +261,13 @@ def index_document_to_qdrant(
                 "fileName": file_name,
                 "rowIndex": idx,
                 "sheetName": row.get("__sheet", "Sheet1"),
-                "incident": str(row.get("Sự cố", "")).strip(),
+                "incident": canonical["incident"],
+                "scenario": canonical["scenario"],
+                "server": canonical["server"],
+                "account": canonical["account"],
+                "symptom": canonical["symptom"],
+                "resolution": canonical["resolution"],
+                "exception": canonical["exception"],
                 "sourceType": "excel-row",
             }
         )
@@ -287,6 +323,45 @@ def search_context(
         limit=limit,
         with_payload=True,
     )
+
+
+def build_direct_incident_answer(hits: list[Any]) -> str | None:
+    if not hits:
+        return None
+
+    top = hits[0]
+    if getattr(top, "score", 0) < 0.6:
+        return None
+
+    payload_data = top.payload or {}
+    incident = str(payload_data.get("incident", "")).strip()
+    scenario = str(payload_data.get("scenario", "")).strip()
+    symptom = str(payload_data.get("symptom", "")).strip()
+    resolution = str(payload_data.get("resolution", "")).strip()
+    exception = str(payload_data.get("exception", "")).strip()
+    server = str(payload_data.get("server", "")).strip()
+    account = str(payload_data.get("account", "")).strip()
+
+    if not resolution:
+        return None
+
+    parts: list[str] = ["Goi y xu ly theo tai lieu ung cuu su co:"]
+    if incident:
+        parts.append(f"- Su co: {incident}")
+    if scenario:
+        parts.append(f"- Truong hop: {scenario}")
+    if server:
+        parts.append(f"- Server: {server}")
+    if account:
+        parts.append(f"- Account: {account}")
+    if symptom:
+        parts.append(f"- Dau hien: {symptom}")
+    parts.append(f"- Cach xu ly: {resolution}")
+    if exception:
+        parts.append(f"- Ngoai le: {exception}")
+
+    parts.append("Neu can, toi co the dua checklist thao tac chi tiet theo buoc.")
+    return "\n".join(parts)
 
 
 def load_document(document_id: str) -> sqlite3.Row:
@@ -474,7 +549,10 @@ def delete_document(document_id: str) -> dict[str, Any]:
     delete_filter = Filter(
         must=[FieldCondition(key="documentId", match=MatchAny(any=[document_id]))]
     )
-    client.delete(collection_name=QDRANT_COLLECTION, points_selector=delete_filter)
+    client.delete(
+        collection_name=QDRANT_COLLECTION,
+        points_selector=FilterSelector(filter=delete_filter),
+    )
 
     return {"status": "deleted", "id": document_id}
 
@@ -493,6 +571,36 @@ def get_document_rows(document_id: str) -> dict[str, Any]:
         "rowCount": len(rows),
         "rows": rows,
     }
+
+
+@app.post("/api/documents/{document_id}/reindex")
+def reindex_document(document_id: str) -> dict[str, Any]:
+    row = load_document(document_id)
+    file_path = Path(row["stored_path"])
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Stored file not found")
+
+    rows = extract_rows_from_excel(file_path)
+    client, embedder, _ = require_clients()
+    chunks = index_document_to_qdrant(
+        client=client,
+        embedder=embedder,
+        document_id=document_id,
+        file_name=row["file_name"],
+        rows=rows,
+    )
+
+    conn = get_conn()
+    try:
+        conn.execute(
+            "UPDATE documents SET status = ?, row_count = ?, updated_at = ? WHERE id = ?",
+            ("indexed", len(rows), now_iso(), document_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"status": "indexed", "id": document_id, "chunks": chunks}
 
 
 @app.get("/api/documents/{document_id}/download")
@@ -533,6 +641,7 @@ def chat(payload: ChatRequest) -> dict[str, Any]:
         )
 
         top_hits = hits[:6]
+        direct_answer = build_direct_incident_answer(top_hits)
         context_blocks: list[str] = []
         sources: list[str] = []
         for idx, hit in enumerate(top_hits, start=1):
@@ -548,6 +657,13 @@ def chat(payload: ChatRequest) -> dict[str, Any]:
             return {
                 "answer": "Khong tim thay du lieu phu hop trong kho tai lieu. Hay thu chon tai lieu khac hoac upload bo tai lieu ung cuu su co.",
                 "sources": [],
+                "recommendedDocuments": recommended,
+            }
+
+        if direct_answer:
+            return {
+                "answer": direct_answer,
+                "sources": sources,
                 "recommendedDocuments": recommended,
             }
 

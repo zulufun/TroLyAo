@@ -17,10 +17,17 @@ This project is now fully n8n-free. The stack runs local-first with a Python API
 5. Backend recommends relevant documents (based on `Sự cố`) and performs RAG retrieval in Qdrant.
 6. Backend calls local Ollama chat model (`ChatOllama`) and returns answer + sources.
 
-## Suggested local models
+## Suggested models
 
-- Chat model: `qwen2.5:7b-instruct-q4_K_M`
-- Embedding model: `bge-m3`
+Low-resource local machine:
+
+- Chat model: qwen2.5:3b-instruct-q4_K_M
+- Embedding model: nomic-embed-text
+
+Server-side larger test model:
+
+- Chat model: qwen2.5:14b-instruct-q4_K_M
+- Embedding model: bge-m3
 
 ## Storage layout
 
@@ -58,6 +65,7 @@ Open apps:
 
 - `POST /api/documents/upload`
 - `GET /api/documents`
+- `POST /api/documents/{document_id}/reindex`
 - `DELETE /api/documents/{document_id}`
 - `POST /api/documents/recommend`
 - `POST /api/chat`
@@ -74,6 +82,8 @@ Designed for incident response sheets containing columns like:
 - `Dấu hiện`
 - `Cách xử lý`
 - `Ngoại lệ`
+
+The backend prioritizes these columns when indexing and answering, and can return a direct high-confidence response from the best matched row before invoking the LLM.
 
 ## Security notes
 
