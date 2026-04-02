@@ -28,6 +28,33 @@
   line-height: 1.45;
 }
 
+.runtime-box {
+  margin-top: 12px;
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(215, 229, 247, 0.2);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.runtime-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85rem;
+}
+
+.runtime-item span {
+  color: #9bb1cc;
+}
+
+.runtime-item strong {
+  color: #f5fbff;
+  font-weight: 600;
+  word-break: break-word;
+}
+
 .menu {
   margin-top: 22px;
   display: grid;

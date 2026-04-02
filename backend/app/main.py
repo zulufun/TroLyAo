@@ -5,7 +5,7 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
@@ -26,8 +26,8 @@ DB_PATH = DATA_ROOT / "documents.db"
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "rag_incident_docs")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:3b-instruct-q4_K_M")
-OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:14b-instruct-q4_K_M")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
 
 app = FastAPI(title="RAG Document Backend", version="1.0.0")
 
@@ -278,9 +278,10 @@ def index_document_to_qdrant(
     vectors = embedder.embed_documents(texts)
     points: list[PointStruct] = []
     for i, (text, metadata, vector) in enumerate(zip(texts, metadatas, vectors), start=1):
+        point_id = str(uuid5(NAMESPACE_URL, f"{document_id}:{i}"))
         points.append(
             PointStruct(
-                id=f"{document_id}-{i}",
+                id=point_id,
                 vector=vector,
                 payload={
                     "text": text,
@@ -441,6 +442,15 @@ def startup() -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/runtime")
+def runtime_info() -> dict[str, Any]:
+    return {
+        "chatModel": OLLAMA_CHAT_MODEL,
+        "embedModel": OLLAMA_EMBED_MODEL,
+        "qdrantCollection": QDRANT_COLLECTION,
+    }
 
 
 @app.get("/api/documents")

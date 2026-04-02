@@ -45,6 +45,12 @@ type BackendChatResponse = {
   recommendedDocuments?: IndexedDocument[]
 }
 
+type RuntimeInfo = {
+  chatModel: string
+  embedModel: string
+  qdrantCollection: string
+}
+
 function App() {
   const sessionId = useMemo(() => crypto.randomUUID(), [])
   const [viewMode, setViewMode] = useState<ViewMode>('documents')
@@ -52,6 +58,7 @@ function App() {
   const [uploadStatus, setUploadStatus] = useState('Chua tai file')
   const [loadingDocs, setLoadingDocs] = useState(false)
   const [loadingChat, setLoadingChat] = useState(false)
+  const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null)
   const [documents, setDocuments] = useState<IndexedDocument[]>([])
   const [recommendedDocs, setRecommendedDocs] = useState<IndexedDocument[]>([])
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
@@ -82,6 +89,23 @@ function App() {
 
   useEffect(() => {
     void loadDocuments()
+  }, [])
+
+  useEffect(() => {
+    const loadRuntimeInfo = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/runtime`)
+        if (!response.ok) {
+          return
+        }
+        const data = (await response.json()) as RuntimeInfo
+        setRuntimeInfo(data)
+      } catch {
+        // Keep UI usable even if runtime metadata endpoint is unavailable.
+      }
+    }
+
+    void loadRuntimeInfo()
   }, [])
 
   const onUploadFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -256,6 +280,16 @@ function App() {
         <div className="brand">
           <h1>RAG Console</h1>
           <p>React + LangChain API + Ollama + Qdrant</p>
+          <div className="runtime-box">
+            <div className="runtime-item">
+              <span>Chat model:</span>
+              <strong>{runtimeInfo?.chatModel ?? 'loading...'}</strong>
+            </div>
+            <div className="runtime-item">
+              <span>Embed model:</span>
+              <strong>{runtimeInfo?.embedModel ?? 'loading...'}</strong>
+            </div>
+          </div>
         </div>
         <nav className="menu">
           <button
