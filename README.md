@@ -1,126 +1,82 @@
-# Local React + n8n RAG Chatbot (Excel/Word)
+# Local React + LangChain RAG (Excel Incident Response)
 
-This workspace provides a practical structure to build a fully local chatbot RAG:
+This project is now fully n8n-free. The stack runs local-first with a Python API using LangChain.
 
-- Frontend: ReactJS (Vite)
-- Backend: Python FastAPI (document repository + routing)
-- Orchestration: n8n
+- Frontend: React + TSX (document management + chat)
+- Backend: FastAPI + LangChain
 - LLM runtime: Ollama (local)
-- Vector database: Qdrant (local disk persistence)
-- Data source files: .xlsx, .xls, .docx
+- Vector DB: Qdrant (local)
+- Source data: Excel (.xlsx, .xls)
 
-## Why this stack
+## Architecture
 
-Based on common open-source patterns in GitHub projects for local RAG pipelines:
-
-1. Ollama + Qdrant + lightweight UI is the most common local-first baseline.
-2. n8n gives low-code observability and faster iteration compared to writing all orchestration code manually.
-3. Qdrant is easier to operate locally than distributed-heavy alternatives and has very good retrieval performance.
-4. bge-m3 embedding is multilingual and usually stronger for Vietnamese retrieval than many generic embedding models.
-
-## GitHub references used
-
-The architecture choices were aligned with these active open-source references:
-
-1. n8n self-hosted stack pattern:
-   - https://github.com/n8n-io/self-hosted-ai-starter-kit
-   - Confirms local combination n8n + Ollama + Qdrant with mounted local files.
-2. Local model runtime pattern:
-   - https://github.com/ollama/ollama
-   - Confirms stable local REST API and Docker-first operations.
-3. Vector storage pattern:
-   - https://github.com/qdrant/qdrant
-   - Confirms local persistent storage, filtering payload, and high-performance retrieval.
-4. Practical local-first product benchmark:
-   - https://github.com/open-webui/open-webui
-   - Confirms offline/self-hosted RAG trend and broad vector DB support, including Qdrant.
-
-From these references, the chosen architecture is intentionally minimal and production-friendly: React UI + n8n workflow layer + Ollama inference + Qdrant vector store.
+1. User uploads Excel from frontend to backend.
+2. Backend stores original file in local disk (`./storage/data/excel`).
+3. Backend parses Excel rows and indexes embeddings to Qdrant via LangChain (`OllamaEmbeddings`).
+4. User asks incident question in chat.
+5. Backend recommends relevant documents (based on `Sự cố`) and performs RAG retrieval in Qdrant.
+6. Backend calls local Ollama chat model (`ChatOllama`) and returns answer + sources.
 
 ## Suggested local models
 
-- Primary chat model: qwen2.5:7b-instruct-q4_K_M
-- Backup chat model: llama3.1:8b-instruct-q4_K_M
-- Embedding model: bge-m3
-- Lightweight fallback embedding: nomic-embed-text
+- Chat model: `qwen2.5:7b-instruct-q4_K_M`
+- Embedding model: `bge-m3`
 
-## Storage recommendation (local)
+## Storage layout
 
-Recommended architecture:
-
-1. Vector store: Qdrant with volume ./storage/qdrant
-2. Workflow and credentials: n8n default sqlite in ./storage/n8n
-3. Raw files archive: ./storage/data
-4. Optional metadata index: sqlite/postgres if you need advanced analytics
-
-For small-medium internal knowledge bases, Qdrant + local disk gives the best balance of speed, simplicity, and maintainability.
+- Raw Excel files: `./storage/data/excel`
+- Document metadata: `./storage/data/documents.db` (SQLite)
+- Vector index: `./storage/qdrant`
+- Ollama model cache: `./storage/ollama`
 
 ## Project structure
 
-- frontend/: React app for upload + chat
-- backend/: FastAPI service for document management and n8n gateway
-- n8n/workflows/: workflow design for ingest/chat
-- n8n/prompts/: prompt templates
-- storage/: persistent local data (runtime generated)
-- docker-compose.yml: local stack bootstrap
+- `frontend/`: React UI with sidebar (Document Management / Q&A)
+- `backend/`: FastAPI + LangChain RAG service
+- `storage/`: persistent local data
+- `docker-compose.yml`: full local runtime
 
-## Quick start
+## Run full stack
 
-1. Start full stack (frontend + backend + n8n + qdrant + ollama):
+```bash
+docker compose up -d --build
+```
 
-   docker compose up -d --build
+If Ubuntu permissions were previously changed by sudo:
 
-2. If you are on Ubuntu and previously ran containers with sudo, reset local volume permissions once:
+```bash
+sudo chown -R 1000:1000 ./storage/data ./storage/qdrant
+```
 
-   sudo chown -R 1000:1000 ./storage/n8n ./storage/data ./storage/qdrant
+Open apps:
 
-3. Open n8n:
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:8000/docs
+- Qdrant: http://localhost:6333
 
-   http://localhost:5678
+## Main backend APIs
 
-4. Open frontend:
+- `POST /api/documents/upload`
+- `GET /api/documents`
+- `DELETE /api/documents/{document_id}`
+- `POST /api/documents/recommend`
+- `POST /api/chat`
+- `GET /api/documents/{document_id}/download`
 
-   http://localhost:5173
+## Excel schema support
 
-5. Configure n8n webhooks:
+Designed for incident response sheets containing columns like:
 
-   - POST /webhook/ingest-excel
-   - POST /webhook/chat
+- `Sự cố`
+- `Trường hợp`
+- `Server`
+- `Account`
+- `Dấu hiện`
+- `Cách xử lý`
+- `Ngoại lệ`
 
-6. Update frontend environment (if backend URL changed):
+## Security notes
 
-   - copy frontend/.env.example to frontend/.env
-   - set VITE_API_BASE_URL if changed
-
-## Backend responsibilities
-
-1. Store uploaded Excel files in local disk: ./storage/data/excel
-2. Manage document metadata via sqlite: ./storage/data/documents.db
-3. Provide API for frontend: upload/list/delete/recommend/chat
-4. Provide API for n8n: fetch rows or download file by document id
-
-## Optional local frontend run (without Docker)
-
-If you do not want frontend in compose, run it manually:
-
-   cd frontend
-   npm install
-   npm run dev
-
-## n8n workflow blueprint
-
-See n8n/workflows/README.md for node-by-node design.
-
-## Performance tuning checklist
-
-1. Chunk size: 700-1200 chars, overlap 120-160 chars
-2. Retrieval topK: start at 8, tune to 6-10
-3. Add reranking later if answers are noisy
-4. Keep citations mandatory in prompt
-5. Track latency at each node in n8n
-
-## Security notes for local deployment
-
-1. Set strong N8N_ENCRYPTION_KEY and basic auth credentials.
-2. Bind services only to localhost when not sharing network.
-3. Do not expose Ollama and Qdrant publicly without reverse proxy and auth.
+1. Keep services bound to localhost in production-like environments.
+2. Do not expose Ollama/Qdrant publicly without access control.
+3. Back up `./storage/data` and `./storage/qdrant` regularly.

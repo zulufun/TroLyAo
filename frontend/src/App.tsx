@@ -236,7 +236,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <h1>RAG Console</h1>
-          <p>React + n8n + Ollama + Qdrant</p>
+          <p>React + LangChain API + Ollama + Qdrant</p>
         </div>
         <nav className="menu">
           <button
@@ -262,8 +262,8 @@ function App() {
             <section className="panel upload-panel">
               <h2>Quan ly tai lieu cho RAG</h2>
               <p>
-                Upload file Excel vao backend. Backend luu kho tai lieu, sau do goi n8n
-                de index vao Qdrant phuc vu RAG.
+                Upload file Excel vao backend. Backend luu kho tai lieu va index truc tiep
+                vao Qdrant bang LangChain de phuc vu RAG.
               </p>
               <label className="file-btn">
                 Chon file Excel

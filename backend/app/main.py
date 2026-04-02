@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import sqlite3
@@ -9,17 +8,25 @@ from typing import Any
 from uuid import uuid4
 
 import pandas as pd
-import requests
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_ollama import ChatOllama, OllamaEmbeddings
 from pydantic import BaseModel, Field
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, Filter, MatchAny, PointStruct, VectorParams
+from qdrant_client.models import FieldCondition
 
 DATA_ROOT = Path(os.getenv("DOC_DATA_ROOT", "/data"))
 EXCEL_DIR = DATA_ROOT / "excel"
 DB_PATH = DATA_ROOT / "documents.db"
-N8N_INGEST_WEBHOOK = os.getenv("N8N_INGEST_WEBHOOK", "http://n8n:5678/webhook/ingest-excel")
-N8N_CHAT_WEBHOOK = os.getenv("N8N_CHAT_WEBHOOK", "http://n8n:5678/webhook/chat")
+QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "rag_incident_docs")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct-q4_K_M")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
 
 app = FastAPI(title="RAG Document Backend", version="1.0.0")
 
@@ -29,6 +36,25 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+qdrant_client: QdrantClient | None = None
+embeddings_model: OllamaEmbeddings | None = None
+chat_model: ChatOllama | None = None
+rag_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Ban la tro ly ung cuu su co. Chi duoc su dung thong tin trong context truy xuat."
+            " Neu khong du du lieu, phai noi ro khong du du lieu."
+            " Luon dua huong dan xu ly ngan gon, ro rang, co trich dan nguon.",
+        ),
+        (
+            "human",
+            "Context:\n{context}\n\nCau hoi su co: {question}\n"
+            "Tra loi bang tieng Viet va co muc 'Nguon tham chieu'.",
+        ),
+    ]
 )
 
 
@@ -114,18 +140,6 @@ def get_incident_keywords(rows: list[dict[str, Any]]) -> list[str]:
     return sorted(values)[:200]
 
 
-def parse_json_fallback(text: str) -> dict[str, Any]:
-    if not text:
-        return {}
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return parsed
-        return {"data": parsed}
-    except json.JSONDecodeError:
-        return {"raw": text}
-
-
 def row_to_document(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -137,6 +151,142 @@ def row_to_document(row: sqlite3.Row) -> dict[str, Any]:
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
+
+
+def require_clients() -> tuple[QdrantClient, OllamaEmbeddings, ChatOllama]:
+    if not qdrant_client or not embeddings_model or not chat_model:
+        raise HTTPException(status_code=500, detail="RAG services are not initialized")
+    return qdrant_client, embeddings_model, chat_model
+
+
+def ensure_qdrant_collection(client: QdrantClient, embedder: OllamaEmbeddings) -> None:
+    probe = embedder.embed_query("incident-response-healthcheck")
+    vector_size = len(probe)
+
+    collections = client.get_collections().collections
+    if any(col.name == QDRANT_COLLECTION for col in collections):
+        return
+
+    client.create_collection(
+        collection_name=QDRANT_COLLECTION,
+        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+    )
+
+
+def build_row_text(row: dict[str, Any]) -> str:
+    preferred_order = [
+        "Sự cố",
+        "Trường hợp",
+        "Server",
+        "Account",
+        "Dấu hiện",
+        "Cách xử lý",
+        "Ngoại lệ",
+    ]
+
+    items: list[str] = []
+    used = set()
+
+    for key in preferred_order:
+        if key in row and str(row[key]).strip():
+            items.append(f"{key}: {str(row[key]).strip()}")
+            used.add(key)
+
+    for key, value in row.items():
+        if key in used or key.startswith("__"):
+            continue
+        if str(value).strip():
+            items.append(f"{key}: {str(value).strip()}")
+
+    return " | ".join(items)
+
+
+def index_document_to_qdrant(
+    client: QdrantClient,
+    embedder: OllamaEmbeddings,
+    document_id: str,
+    file_name: str,
+    rows: list[dict[str, Any]],
+) -> int:
+    ensure_qdrant_collection(client, embedder)
+
+    if not rows:
+        return 0
+
+    delete_filter = Filter(
+        must=[FieldCondition(key="documentId", match=MatchAny(any=[document_id]))]
+    )
+    client.delete(collection_name=QDRANT_COLLECTION, points_selector=delete_filter)
+
+    texts: list[str] = []
+    metadatas: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows, start=1):
+        text = build_row_text(row)
+        if not text:
+            continue
+        texts.append(text)
+        metadatas.append(
+            {
+                "documentId": document_id,
+                "fileName": file_name,
+                "rowIndex": idx,
+                "sheetName": row.get("__sheet", "Sheet1"),
+                "incident": str(row.get("Sự cố", "")).strip(),
+                "sourceType": "excel-row",
+            }
+        )
+
+    if not texts:
+        return 0
+
+    vectors = embedder.embed_documents(texts)
+    points: list[PointStruct] = []
+    for i, (text, metadata, vector) in enumerate(zip(texts, metadatas, vectors), start=1):
+        points.append(
+            PointStruct(
+                id=f"{document_id}-{i}",
+                vector=vector,
+                payload={
+                    "text": text,
+                    **metadata,
+                },
+            )
+        )
+
+    client.upsert(collection_name=QDRANT_COLLECTION, points=points, wait=True)
+    return len(points)
+
+
+def search_context(
+    client: QdrantClient,
+    embedder: OllamaEmbeddings,
+    question: str,
+    selected_document_ids: list[str],
+    use_all_documents: bool,
+    limit: int = 8,
+) -> list[Any]:
+    ensure_qdrant_collection(client, embedder)
+
+    query_vector = embedder.embed_query(question)
+
+    query_filter = None
+    if not use_all_documents and selected_document_ids:
+        query_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="documentId",
+                    match=MatchAny(any=selected_document_ids),
+                )
+            ]
+        )
+
+    return client.search(
+        collection_name=QDRANT_COLLECTION,
+        query_vector=query_vector,
+        query_filter=query_filter,
+        limit=limit,
+        with_payload=True,
+    )
 
 
 def load_document(document_id: str) -> sqlite3.Row:
@@ -198,6 +348,19 @@ class ChatRequest(BaseModel):
 @app.on_event("startup")
 def startup() -> None:
     init_storage()
+    global qdrant_client, embeddings_model, chat_model
+    qdrant_client = QdrantClient(url=QDRANT_URL, timeout=30)
+    embeddings_model = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+    chat_model = ChatOllama(
+        model=OLLAMA_CHAT_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=0.1,
+    )
+    try:
+        ensure_qdrant_collection(qdrant_client, embeddings_model)
+    except Exception:
+        # Ollama model pull may still be running; collection init will retry lazily.
+        pass
 
 
 @app.get("/health")
@@ -262,27 +425,10 @@ def upload_document(
 
         indexing_result: dict[str, Any] = {"status": "skipped"}
         if auto_index:
-            with stored_path.open("rb") as f:
-                response = requests.post(
-                    N8N_INGEST_WEBHOOK,
-                    files={"file": (file_name, f, "application/vnd.ms-excel")},
-                    data={"document_id": document_id, "file_name": file_name},
-                    timeout=120,
-                )
-
-            raw_text = response.text if response.text is not None else ""
-            parsed = parse_json_fallback(raw_text)
-
-            if response.ok:
-                indexing_result = {"status": "indexed", **parsed}
-                status_value = "indexed"
-            else:
-                indexing_result = {
-                    "status": "index_failed",
-                    "httpStatus": response.status_code,
-                    **parsed,
-                }
-                status_value = "index_failed"
+            client, embedder, _ = require_clients()
+            chunks = index_document_to_qdrant(client, embedder, document_id, file_name, rows)
+            indexing_result = {"status": "indexed", "chunks": chunks}
+            status_value = "indexed"
 
             conn = get_conn()
             try:
@@ -323,6 +469,12 @@ def delete_document(document_id: str) -> dict[str, Any]:
 
     if stored_path.exists():
         stored_path.unlink(missing_ok=True)
+
+    client, _, _ = require_clients()
+    delete_filter = Filter(
+        must=[FieldCondition(key="documentId", match=MatchAny(any=[document_id]))]
+    )
+    client.delete(collection_name=QDRANT_COLLECTION, points_selector=delete_filter)
 
     return {"status": "deleted", "id": document_id}
 
@@ -369,38 +521,45 @@ def chat(payload: ChatRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Select at least one document or choose all")
 
     recommended = recommend_documents_logic(payload.question, 5)
-
-    upstream_payload = {
-        "question": payload.question,
-        "sessionId": payload.sessionId,
-        "selectedDocumentIds": payload.selectedDocumentIds,
-        "useAllDocuments": payload.useAllDocuments,
-    }
-
     try:
-        response = requests.post(N8N_CHAT_WEBHOOK, json=upstream_payload, timeout=120)
-        raw_text = response.text if response.text is not None else ""
-        parsed = parse_json_fallback(raw_text)
+        client, embedder, llm = require_clients()
+        hits = search_context(
+            client=client,
+            embedder=embedder,
+            question=payload.question,
+            selected_document_ids=payload.selectedDocumentIds,
+            use_all_documents=payload.useAllDocuments,
+            limit=8,
+        )
 
-        if not response.ok:
-            raise HTTPException(
-                status_code=502,
-                detail={
-                    "message": "n8n chat webhook failed",
-                    "httpStatus": response.status_code,
-                    "upstream": parsed,
-                },
-            )
+        top_hits = hits[:6]
+        context_blocks: list[str] = []
+        sources: list[str] = []
+        for idx, hit in enumerate(top_hits, start=1):
+            payload_data = hit.payload or {}
+            file_name = str(payload_data.get("fileName", "unknown"))
+            row_index = payload_data.get("rowIndex", "?")
+            text = str(payload_data.get("text", ""))
+            context_blocks.append(f"[{idx}] ({file_name} - row {row_index}) {text}")
+            sources.append(f"{file_name}#row:{row_index}")
 
-        answer = parsed.get("answer") if isinstance(parsed, dict) else None
-        sources = parsed.get("sources") if isinstance(parsed, dict) else []
+        context = "\n\n".join(context_blocks)
+        if not context:
+            return {
+                "answer": "Khong tim thay du lieu phu hop trong kho tai lieu. Hay thu chon tai lieu khac hoac upload bo tai lieu ung cuu su co.",
+                "sources": [],
+                "recommendedDocuments": recommended,
+            }
+
+        chain = rag_prompt | llm | StrOutputParser()
+        answer = chain.invoke({"context": context, "question": payload.question})
 
         return {
-            "answer": answer or "Khong nhan duoc cau tra loi tu n8n.",
-            "sources": sources if isinstance(sources, list) else [],
+            "answer": answer,
+            "sources": sources,
             "recommendedDocuments": recommended,
         }
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Chat gateway error: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Chat RAG error: {exc}") from exc
