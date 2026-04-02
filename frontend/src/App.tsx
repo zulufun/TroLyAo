@@ -112,7 +112,7 @@ function App() {
     void loadRuntimeInfo()
     const timer = setInterval(() => {
       void loadRuntimeInfo()
-    }, 5000)
+    }, 2000)
 
     return () => clearInterval(timer)
   }, [])
@@ -304,15 +304,23 @@ function App() {
                 className={
                   runtimeInfo?.status === 'ready'
                     ? 'runtime-status ready'
-                    : 'runtime-status loading'
+                    : runtimeInfo?.status === 'ollama-unreachable'
+                      ? 'runtime-status loading'
+                      : 'runtime-status loading'
                 }
               >
                 {runtimeInfo?.status === 'ready'
                   ? 'Da san sang'
                   : runtimeInfo?.status === 'ollama-unreachable'
                     ? 'Khong ket noi duoc Ollama'
-                    : 'Dang tai model...'}
+                    : runtimeInfo?.status === 'loading-models'
+                      ? 'Dang tai model...'
+                      : 'Dang kiem tra model...'}
               </strong>
+            </div>
+            <div className="runtime-item">
+              <span>Qdrant collection:</span>
+              <strong>{runtimeInfo?.qdrantCollection ?? 'loading...'}</strong>
             </div>
           </div>
         </div>

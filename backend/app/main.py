@@ -1,4 +1,5 @@
 import os
+import io
 import re
 import sqlite3
 import unicodedata
@@ -12,7 +13,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -23,7 +24,6 @@ from qdrant_client.models import FieldCondition
 from qdrant_client.models import FilterSelector
 
 DATA_ROOT = Path(os.getenv("DOC_DATA_ROOT", "/data"))
-EXCEL_DIR = DATA_ROOT / "excel"
 DB_PATH = DATA_ROOT / "documents.db"
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "rag_incident_docs")
@@ -104,7 +104,6 @@ def get_conn() -> sqlite3.Connection:
 
 def init_storage() -> None:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
-    EXCEL_DIR.mkdir(parents=True, exist_ok=True)
 
     conn = get_conn()
     try:
@@ -113,7 +112,9 @@ def init_storage() -> None:
             CREATE TABLE IF NOT EXISTS documents (
                 id TEXT PRIMARY KEY,
                 file_name TEXT NOT NULL,
-                stored_path TEXT NOT NULL,
+                stored_path TEXT NOT NULL DEFAULT '',
+                file_content BLOB,
+                file_mime TEXT NOT NULL DEFAULT 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 row_count INTEGER NOT NULL,
                 status TEXT NOT NULL,
                 incident_keywords TEXT NOT NULL,
@@ -122,13 +123,42 @@ def init_storage() -> None:
             )
             """
         )
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        if "file_content" not in columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN file_content BLOB")
+        if "file_mime" not in columns:
+            conn.execute(
+                "ALTER TABLE documents ADD COLUMN file_mime TEXT NOT NULL DEFAULT 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+            )
+        conn.commit()
+
+        legacy_rows = conn.execute(
+            "SELECT id, stored_path, file_content FROM documents WHERE file_content IS NULL OR length(file_content) = 0"
+        ).fetchall()
+        for legacy_row in legacy_rows:
+            legacy_path = str(legacy_row["stored_path"] or "").strip()
+            if not legacy_path:
+                continue
+            legacy_file = Path(legacy_path)
+            if not legacy_file.exists():
+                continue
+            content = legacy_file.read_bytes()
+            conn.execute(
+                "UPDATE documents SET file_content = ?, stored_path = '' WHERE id = ?",
+                (content, legacy_row["id"]),
+            )
+            try:
+                legacy_file.unlink(missing_ok=True)
+            except Exception:
+                pass
         conn.commit()
     finally:
         conn.close()
 
 
-def extract_rows_from_excel(file_path: Path) -> list[dict[str, Any]]:
-    sheet_map = pd.read_excel(file_path, sheet_name=None, dtype=str)
+def extract_rows_from_excel_content(content: bytes) -> list[dict[str, Any]]:
+    sheet_map = pd.read_excel(io.BytesIO(content), sheet_name=None, dtype=str)
     rows: list[dict[str, Any]] = []
     for sheet_name, df in sheet_map.items():
         cleaned_df = df.fillna("")
@@ -169,7 +199,6 @@ def row_to_document(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
         "fileName": row["file_name"],
-        "storedPath": row["stored_path"],
         "rowCount": row["row_count"],
         "status": row["status"],
         "incidentKeywords": [x for x in row["incident_keywords"].split("|") if x],
@@ -189,8 +218,21 @@ def ensure_qdrant_collection(client: QdrantClient, embedder: OllamaEmbeddings) -
     vector_size = len(probe)
 
     collections = client.get_collections().collections
-    if any(col.name == QDRANT_COLLECTION for col in collections):
-        return
+    collection_exists = any(col.name == QDRANT_COLLECTION for col in collections)
+    if collection_exists:
+        info = client.get_collection(QDRANT_COLLECTION)
+        existing_size = None
+        vectors = info.config.params.vectors if info.config and info.config.params else None
+        if isinstance(vectors, dict):
+            existing_size = next(iter(vectors.values())).size if vectors else None
+        elif vectors is not None:
+            existing_size = vectors.size
+
+        if existing_size == vector_size:
+            return
+
+        # Rebuild the collection if the embedding dimension changed.
+        client.delete_collection(QDRANT_COLLECTION)
 
     client.create_collection(
         collection_name=QDRANT_COLLECTION,
@@ -392,6 +434,34 @@ def load_document(document_id: str) -> sqlite3.Row:
         conn.close()
 
 
+def get_document_content(row: sqlite3.Row) -> tuple[bytes, str]:
+    content = row["file_content"]
+    if content:
+        return bytes(content), str(row["file_mime"] or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    legacy_path = str(row["stored_path"] or "").strip()
+    if legacy_path:
+        legacy_file = Path(legacy_path)
+        if legacy_file.exists():
+            content_bytes = legacy_file.read_bytes()
+            conn = get_conn()
+            try:
+                conn.execute(
+                    "UPDATE documents SET file_content = ?, stored_path = '' WHERE id = ?",
+                    (content_bytes, row["id"]),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            try:
+                legacy_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return content_bytes, str(row["file_mime"] or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    raise HTTPException(status_code=404, detail="Stored file not found")
+
+
 def recommend_documents_logic(question: str, top_k: int) -> list[dict[str, Any]]:
     norm_question = normalize_text(question)
     q_tokens = set(norm_question.split())
@@ -506,13 +576,10 @@ def upload_document(
         raise HTTPException(status_code=400, detail="Only .xlsx and .xls are supported")
 
     document_id = str(uuid4())
-    stored_name = f"{document_id}{ext}"
-    stored_path = EXCEL_DIR / stored_name
 
     try:
         content = file.file.read()
-        stored_path.write_bytes(content)
-        rows = extract_rows_from_excel(stored_path)
+        rows = extract_rows_from_excel_content(content)
         keywords = get_incident_keywords(rows)
         row_count = len(rows)
 
@@ -521,13 +588,14 @@ def upload_document(
             now = now_iso()
             conn.execute(
                 """
-                INSERT INTO documents(id, file_name, stored_path, row_count, status, incident_keywords, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO documents(id, file_name, stored_path, file_content, file_mime, row_count, status, incident_keywords, created_at, updated_at)
+                VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document_id,
                     file_name,
-                    str(stored_path),
+                    content,
+                    file.content_type or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     row_count,
                     "uploaded",
                     "|".join(keywords),
@@ -566,15 +634,12 @@ def upload_document(
     except HTTPException:
         raise
     except Exception as exc:
-        if stored_path.exists():
-            stored_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Upload failed: {exc}") from exc
 
 
 @app.delete("/api/documents/{document_id}")
 def delete_document(document_id: str) -> dict[str, Any]:
     row = load_document(document_id)
-    stored_path = Path(row["stored_path"])
 
     conn = get_conn()
     try:
@@ -582,9 +647,6 @@ def delete_document(document_id: str) -> dict[str, Any]:
         conn.commit()
     finally:
         conn.close()
-
-    if stored_path.exists():
-        stored_path.unlink(missing_ok=True)
 
     client, _, _ = require_clients()
     delete_filter = Filter(
@@ -601,11 +663,8 @@ def delete_document(document_id: str) -> dict[str, Any]:
 @app.get("/api/documents/{document_id}/rows")
 def get_document_rows(document_id: str) -> dict[str, Any]:
     row = load_document(document_id)
-    file_path = Path(row["stored_path"])
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Stored file not found")
-
-    rows = extract_rows_from_excel(file_path)
+    content, _ = get_document_content(row)
+    rows = extract_rows_from_excel_content(content)
     return {
         "id": row["id"],
         "fileName": row["file_name"],
@@ -617,11 +676,8 @@ def get_document_rows(document_id: str) -> dict[str, Any]:
 @app.post("/api/documents/{document_id}/reindex")
 def reindex_document(document_id: str) -> dict[str, Any]:
     row = load_document(document_id)
-    file_path = Path(row["stored_path"])
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Stored file not found")
-
-    rows = extract_rows_from_excel(file_path)
+    content, _ = get_document_content(row)
+    rows = extract_rows_from_excel_content(content)
     client, embedder, _ = require_clients()
     chunks = index_document_to_qdrant(
         client=client,
@@ -645,16 +701,13 @@ def reindex_document(document_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/documents/{document_id}/download")
-def download_document(document_id: str) -> FileResponse:
+def download_document(document_id: str) -> StreamingResponse:
     row = load_document(document_id)
-    file_path = Path(row["stored_path"])
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Stored file not found")
-
-    return FileResponse(
-        path=file_path,
-        filename=row["file_name"],
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    content, mime_type = get_document_content(row)
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=mime_type,
+        headers={"Content-Disposition": f'attachment; filename="{row["file_name"]}"'},
     )
 
 

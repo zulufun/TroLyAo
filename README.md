@@ -11,7 +11,7 @@ This project is now fully n8n-free. The stack runs local-first with a Python API
 ## Architecture
 
 1. User uploads Excel from frontend to backend.
-2. Backend stores original file in local disk (`./storage/data/excel`).
+2. Backend stores the original Excel bytes inside SQLite as BLOB, not as a file path.
 3. Backend parses Excel rows and indexes embeddings to Qdrant via LangChain (`OllamaEmbeddings`).
 4. User asks incident question in chat.
 5. Backend recommends relevant documents (based on `Sự cố`) and performs RAG retrieval in Qdrant.
@@ -31,8 +31,7 @@ Server-side larger test model:
 
 ## Storage layout
 
-- Raw Excel files: `./storage/data/excel`
-- Document metadata: `./storage/data/documents.db` (SQLite)
+- Document file bytes + metadata: `./storage/data/documents.db` (SQLite BLOB)
 - Vector index: `./storage/qdrant`
 - Ollama model cache: `./storage/ollama`
 
