@@ -12,6 +12,22 @@ Required webhooks after import:
 - POST /webhook/ingest-excel
 - POST /webhook/chat
 
+## New architecture with Python backend
+
+Frontend does not upload directly to n8n anymore.
+
+1. Frontend uploads Excel to backend: POST /api/documents/upload
+2. Backend stores file in local disk and manages metadata in sqlite
+3. Backend calls n8n webhook /webhook/ingest-excel to index into Qdrant
+4. Frontend chat calls backend /api/chat
+5. Backend forwards to n8n /webhook/chat with selectedDocumentIds or useAllDocuments
+
+Useful backend APIs for n8n integration:
+
+- GET /api/documents
+- GET /api/documents/{id}/rows
+- GET /api/documents/{id}/download
+
 ## Workflow 1: ingest_file
 
 1. Webhook (POST /webhook/ingest, binary file)
@@ -64,7 +80,7 @@ Required webhooks after import:
 Use two-layer storage for reliability:
 
 1. Raw Excel archive on local disk:
-   - Save files under /data/excel inside n8n container.
+   - Save files under /data/excel inside backend container.
    - On host, this maps to ./storage/data/excel.
    - Reason: easy backup and re-indexing.
 2. Retrieval storage in Qdrant:

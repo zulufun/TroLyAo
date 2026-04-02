@@ -41,6 +41,23 @@ services:
         condition: service_started
       ollama:
         condition: service_started
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend-local
+    ports:
+      - "8000:8000"
+    environment:
+      - DOC_DATA_ROOT=/data
+      - N8N_INGEST_WEBHOOK=http://n8n:5678/webhook/ingest-excel
+      - N8N_CHAT_WEBHOOK=http://n8n:5678/webhook/chat
+    volumes:
+      - ./storage/data:/data
     restart: unless-stopped
 
   qdrant:
@@ -84,9 +101,13 @@ services:
     command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
     ports:
       - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
     volumes:
       - ./frontend:/app
     depends_on:
       n8n:
+        condition: service_started
+      backend:
         condition: service_started
     restart: unless-stopped

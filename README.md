@@ -3,6 +3,7 @@
 This workspace provides a practical structure to build a fully local chatbot RAG:
 
 - Frontend: ReactJS (Vite)
+- Backend: Python FastAPI (document repository + routing)
 - Orchestration: n8n
 - LLM runtime: Ollama (local)
 - Vector database: Qdrant (local disk persistence)
@@ -57,6 +58,7 @@ For small-medium internal knowledge bases, Qdrant + local disk gives the best ba
 ## Project structure
 
 - frontend/: React app for upload + chat
+- backend/: FastAPI service for document management and n8n gateway
 - n8n/workflows/: workflow design for ingest/chat
 - n8n/prompts/: prompt templates
 - storage/: persistent local data (runtime generated)
@@ -64,7 +66,7 @@ For small-medium internal knowledge bases, Qdrant + local disk gives the best ba
 
 ## Quick start
 
-1. Start full stack (n8n + qdrant + ollama + frontend):
+1. Start full stack (frontend + backend + n8n + qdrant + ollama):
 
    docker compose up -d --build
 
@@ -85,10 +87,17 @@ For small-medium internal knowledge bases, Qdrant + local disk gives the best ba
    - POST /webhook/ingest-excel
    - POST /webhook/chat
 
-6. Update frontend environment (if webhook URL changed):
+6. Update frontend environment (if backend URL changed):
 
    - copy frontend/.env.example to frontend/.env
-   - set webhook URLs if changed
+   - set VITE_API_BASE_URL if changed
+
+## Backend responsibilities
+
+1. Store uploaded Excel files in local disk: ./storage/data/excel
+2. Manage document metadata via sqlite: ./storage/data/documents.db
+3. Provide API for frontend: upload/list/delete/recommend/chat
+4. Provide API for n8n: fetch rows or download file by document id
 
 ## Optional local frontend run (without Docker)
 

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useEffect } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import './App.css'
 
@@ -9,15 +10,15 @@ type ChatMessage = {
   text: string
 }
 
-type ChatResponse = {
-  answer?: string
-  sources?: string[]
-}
-
 type IngestResponse = {
-  status?: string
-  chunks?: number
-  fileName?: string
+  id: string
+  status: string
+  fileName: string
+  rowCount: number
+  indexResult?: {
+    status?: string
+    chunks?: number
+  }
 }
 
 type ViewMode = 'documents' | 'chat'
@@ -25,30 +26,63 @@ type ViewMode = 'documents' | 'chat'
 type IndexedDocument = {
   id: string
   fileName: string
-  chunks: number
-  uploadedAt: string
+  rowCount: number
+  createdAt: string
+  updatedAt: string
   status: string
+  incidentKeywords: string[]
 }
 
-const CHAT_WEBHOOK =
-  import.meta.env.VITE_N8N_CHAT_WEBHOOK ?? 'http://localhost:5678/webhook/chat'
-const INGEST_WEBHOOK =
-  import.meta.env.VITE_N8N_INGEST_WEBHOOK ??
-  'http://localhost:5678/webhook/ingest-excel'
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+
+type RecommendResponse = {
+  documents: IndexedDocument[]
+}
+
+type BackendChatResponse = {
+  answer?: string
+  sources?: string[]
+  recommendedDocuments?: IndexedDocument[]
+}
 
 function App() {
   const sessionId = useMemo(() => crypto.randomUUID(), [])
   const [viewMode, setViewMode] = useState<ViewMode>('documents')
   const [question, setQuestion] = useState('')
   const [uploadStatus, setUploadStatus] = useState('Chua tai file')
+  const [loadingDocs, setLoadingDocs] = useState(false)
   const [loadingChat, setLoadingChat] = useState(false)
   const [documents, setDocuments] = useState<IndexedDocument[]>([])
+  const [recommendedDocs, setRecommendedDocs] = useState<IndexedDocument[]>([])
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
+  const [useAllDocs, setUseAllDocs] = useState(true)
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
       text: 'Xin chao, hay tai file Excel va dat cau hoi de bat dau RAG.',
     },
   ])
+
+  const loadDocuments = async () => {
+    setLoadingDocs(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/documents`)
+      if (!response.ok) {
+        throw new Error('Khong lay duoc danh sach tai lieu')
+      }
+      const data = (await response.json()) as { documents: IndexedDocument[] }
+      setDocuments(data.documents || [])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      setUploadStatus(`Tai danh sach loi: ${message}`)
+    } finally {
+      setLoadingDocs(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadDocuments()
+  }, [])
 
   const onUploadFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -62,36 +96,84 @@ function App() {
     formData.append('file', file)
 
     try {
-      const response = await fetch(INGEST_WEBHOOK, {
+      const response = await fetch(`${API_BASE}/api/documents/upload?auto_index=true`, {
         method: 'POST',
         body: formData,
       })
 
       if (!response.ok) {
-        throw new Error('Khong goi duoc ingest webhook')
+        const errorText = await response.text()
+        throw new Error(errorText || 'Khong goi duoc backend upload')
       }
 
       const result = (await response.json()) as IngestResponse
-      const chunkCount = result.chunks ?? 0
-      setUploadStatus(`Da index ${chunkCount} chunks cho file ${file.name}`)
-      setDocuments((prev) => [
-        {
-          id: crypto.randomUUID(),
-          fileName: result.fileName ?? file.name,
-          chunks: chunkCount,
-          uploadedAt: new Date().toLocaleString('vi-VN'),
-          status: result.status ?? 'indexed',
-        },
-        ...prev,
-      ])
+      const chunks = result.indexResult?.chunks ?? result.rowCount
+      setUploadStatus(`Da xu ly ${chunks} dong/chunk cho file ${result.fileName}`)
+      await loadDocuments()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
       setUploadStatus(`Upload loi: ${message}`)
     }
   }
 
-  const removeDocument = (id: string) => {
-    setDocuments((prev) => prev.filter((item) => item.id !== id))
+  const removeDocument = async (id: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/documents/${id}`, {
+        method: 'DELETE',
+      })
+      if (!response.ok) {
+        throw new Error('Khong xoa duoc tai lieu')
+      }
+      setDocuments((prev) => prev.filter((item) => item.id !== id))
+      setRecommendedDocs((prev) => prev.filter((item) => item.id !== id))
+      setSelectedDocIds((prev) => prev.filter((docId) => docId !== id))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      setUploadStatus(`Xoa tai lieu loi: ${message}`)
+    }
+  }
+
+  const suggestDocuments = async () => {
+    const incident = question.trim()
+    if (!incident) {
+      return
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/api/documents/recommend`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          incident,
+          topK: 5,
+        }),
+      })
+      if (!response.ok) {
+        throw new Error('Khong goi duoc API goi y tai lieu')
+      }
+
+      const data = (await response.json()) as RecommendResponse
+      setRecommendedDocs(data.documents || [])
+      setUseAllDocs(false)
+      setSelectedDocIds((data.documents || []).map((doc) => doc.id))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', text: `Khong goi y duoc tai lieu: ${message}` },
+      ])
+    }
+  }
+
+  const toggleSelectedDoc = (docId: string) => {
+    setSelectedDocIds((prev) => {
+      if (prev.includes(docId)) {
+        return prev.filter((id) => id !== docId)
+      }
+      return [...prev, docId]
+    })
   }
 
   const onAskQuestion = async (event: FormEvent<HTMLFormElement>) => {
@@ -106,7 +188,7 @@ function App() {
     setLoadingChat(true)
 
     try {
-      const response = await fetch(CHAT_WEBHOOK, {
+      const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -114,18 +196,25 @@ function App() {
         body: JSON.stringify({
           question: trimmed,
           sessionId,
+          useAllDocuments: useAllDocs,
+          selectedDocumentIds: selectedDocIds,
         }),
       })
 
       if (!response.ok) {
-        throw new Error('Khong goi duoc chat webhook')
+        const errorText = await response.text()
+        throw new Error(errorText || 'Khong goi duoc backend chat')
       }
 
-      const result = (await response.json()) as ChatResponse
+      const result = (await response.json()) as BackendChatResponse
       const answer = result.answer ?? 'Khong nhan duoc cau tra loi tu he thong.'
       const sources = result.sources && result.sources.length > 0
         ? `\nNguon: ${result.sources.join(', ')}`
         : ''
+
+      if (result.recommendedDocuments && result.recommendedDocuments.length > 0) {
+        setRecommendedDocs(result.recommendedDocuments)
+      }
 
       setMessages((prev) => [
         ...prev,
@@ -173,14 +262,14 @@ function App() {
             <section className="panel upload-panel">
               <h2>Quan ly tai lieu cho RAG</h2>
               <p>
-                Upload file Excel de n8n ingest, tao embedding va luu vao Qdrant.
-                File goc nen luu tai /data/excel trong n8n de co the re-index.
+                Upload file Excel vao backend. Backend luu kho tai lieu, sau do goi n8n
+                de index vao Qdrant phuc vu RAG.
               </p>
               <label className="file-btn">
                 Chon file Excel
                 <input type="file" accept=".xlsx,.xls" onChange={onUploadFile} />
               </label>
-              <div className="status">{uploadStatus}</div>
+              <div className="status">{uploadStatus} {loadingDocs ? '(dang dong bo...)' : ''}</div>
             </section>
 
             <section className="panel">
@@ -193,12 +282,15 @@ function App() {
                     <article key={doc.id} className="doc-item">
                       <div>
                         <h3>{doc.fileName}</h3>
-                        <p>Chunks: {doc.chunks}</p>
-                        <p>Thoi gian: {doc.uploadedAt}</p>
+                        <p>Rows: {doc.rowCount}</p>
+                        <p>Thoi gian: {doc.createdAt}</p>
                         <p>Trang thai: {doc.status}</p>
+                        {doc.incidentKeywords && doc.incidentKeywords.length > 0 && (
+                          <p>Su co mau: {doc.incidentKeywords.slice(0, 4).join(', ')}</p>
+                        )}
                       </div>
                       <button type="button" onClick={() => removeDocument(doc.id)}>
-                        An khoi danh sach
+                        Xoa tai lieu
                       </button>
                     </article>
                   ))}
@@ -212,8 +304,39 @@ function App() {
           <section className="panel chat-panel">
             <h2>Hoi dap voi tri thuc RAG</h2>
             <p className="chat-note">
-              n8n se truy xuat tu Qdrant collection rag_docs de tao context tra loi.
+              Dat cau hoi su co. He thong co the goi y tai lieu ung cuu phu hop,
+              hoac ban co the chon doc tat ca.
             </p>
+
+            <div className="recommend-tools">
+              <button type="button" onClick={suggestDocuments} className="secondary-btn">
+                Goi y tai lieu theo su co
+              </button>
+              <label className="check-all">
+                <input
+                  type="checkbox"
+                  checked={useAllDocs}
+                  onChange={(event) => setUseAllDocs(event.target.checked)}
+                />
+                Dung tat ca tai lieu
+              </label>
+            </div>
+
+            {!useAllDocs && recommendedDocs.length > 0 && (
+              <div className="recommend-list">
+                {recommendedDocs.map((doc) => (
+                  <label key={doc.id} className="recommend-item">
+                    <input
+                      type="checkbox"
+                      checked={selectedDocIds.includes(doc.id)}
+                      onChange={() => toggleSelectedDoc(doc.id)}
+                    />
+                    <span>{doc.fileName}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+
             <div className="message-list">
               {messages.map((message, index) => (
                 <div key={`${message.role}-${index}`} className={`message ${message.role}`}>

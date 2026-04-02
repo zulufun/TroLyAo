@@ -39,7 +39,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all();\nconst out = [];\nfor (const item of rows) {\n  const row = item.json;\n  const parts = [];\n  for (const [k, v] of Object.entries(row)) {\n    if (v !== null && v !== undefined && String(v).trim() !== '') {\n      parts.push(`${k}: ${String(v).trim()}`);\n    }\n  }\n  const text = parts.join(' | ');\n  if (text.length > 0) {\n    out.push({\n      json: {\n        text,\n        fileName: $json.fileName || 'excel-upload',\n        sourceType: 'excel-row'\n      }\n    });\n  }\n}\nreturn out;"
+        "jsCode": "const rows = $input.all();\nconst out = [];\nconst body = $('Webhook Ingest').item.json.body || {};\nconst documentId = body.document_id || body.documentId || 'unknown-doc';\nconst incomingFileName = body.file_name || body.fileName || 'excel-upload';\nfor (const item of rows) {\n  const row = item.json;\n  const parts = [];\n  for (const [k, v] of Object.entries(row)) {\n    if (v !== null && v !== undefined && String(v).trim() !== '') {\n      parts.push(`${k}: ${String(v).trim()}`);\n    }\n  }\n  const text = parts.join(' | ');\n  if (text.length > 0) {\n    out.push({\n      json: {\n        text,\n        fileName: incomingFileName,\n        documentId,\n        sourceType: 'excel-row'\n      }\n    });\n  }\n}\nreturn out;"
       },
       "id": "3",
       "name": "Build Row Text",
@@ -70,7 +70,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const input = $input.item;\nconst text = $('Build Row Text').item.json.text;\nconst fileName = $('Build Row Text').item.json.fileName;\nconst vector = input.json.embedding || [];\nconst id = Date.now() + Math.floor(Math.random() * 1000000);\nreturn [{\n  json: {\n    points: [\n      {\n        id,\n        vector,\n        payload: {\n          text,\n          fileName,\n          sourceType: 'excel-row'\n        }\n      }\n    ]\n  }\n}];"
+        "jsCode": "const input = $input.item;\nconst text = $('Build Row Text').item.json.text;\nconst fileName = $('Build Row Text').item.json.fileName;\nconst documentId = $('Build Row Text').item.json.documentId;\nconst vector = input.json.embedding || [];\nconst id = Date.now() + Math.floor(Math.random() * 1000000);\nreturn [{\n  json: {\n    points: [\n      {\n        id,\n        vector,\n        payload: {\n          text,\n          fileName,\n          documentId,\n          sourceType: 'excel-row'\n        }\n      }\n    ]\n  }\n}];"
       },
       "id": "5",
       "name": "Prepare Qdrant Point",
