@@ -1,5 +1,17 @@
 # n8n workflow design (local RAG)
 
+## Import-ready workflows
+
+- rag_ingest_excel_local.json
+- rag_chat_local.json
+
+In n8n UI, use Import from File and select both JSON files in this folder.
+
+Required webhooks after import:
+
+- POST /webhook/ingest-excel
+- POST /webhook/chat
+
 ## Workflow 1: ingest_file
 
 1. Webhook (POST /webhook/ingest, binary file)
@@ -46,3 +58,21 @@
 - Qdrant data persisted in ./storage/qdrant.
 - n8n workflows and credentials persisted in ./storage/n8n.
 - Ollama models persisted in ./storage/ollama.
+
+## Recommended Excel storage strategy in n8n
+
+Use two-layer storage for reliability:
+
+1. Raw Excel archive on local disk:
+   - Save files under /data/excel inside n8n container.
+   - On host, this maps to ./storage/data/excel.
+   - Reason: easy backup and re-indexing.
+2. Retrieval storage in Qdrant:
+   - Store row text chunks and metadata in payload.
+   - Keep fields: fileName, sheetName, rowIndex, uploadedAt.
+
+Suggested extra step in ingest workflow:
+
+- Add Write File to Disk node right after Webhook Ingest to persist original file before parsing.
+
+This model lets you restore vectors anytime from local Excel files without re-uploading.

@@ -1,0 +1,164 @@
+{
+  "name": "RAG Chat Local",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "chat",
+        "httpMethod": "POST",
+        "responseMode": "responseNode"
+      },
+      "id": "1",
+      "name": "Webhook Chat",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://ollama:11434/api/embeddings",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"bge-m3\",\n  \"prompt\": $json.body.question\n}",
+        "options": {}
+      },
+      "id": "2",
+      "name": "Embedding Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://qdrant:6333/collections/rag_docs/points/search",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": $json.embedding,\n  \"limit\": 8,\n  \"with_payload\": true\n}",
+        "options": {}
+      },
+      "id": "3",
+      "name": "Search Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const question = $('Webhook Chat').item.json.body.question || '';\nconst hits = $json.result || [];\nconst topHits = hits.slice(0, 6);\nconst contextBlocks = topHits.map((h, idx) => {\n  const text = h.payload?.text || '';\n  const fileName = h.payload?.fileName || 'unknown';\n  return `[${idx + 1}] (${fileName}) ${text}`;\n});\nconst prompt = `Ban la tro ly RAG.\nChi duoc tra loi dua tren context duoi day.\nNeu khong du du lieu, noi ro khong du du lieu.\n\nContext:\n${contextBlocks.join('\\n\\n')}\\n\\nQuestion: ${question}`;\nconst sources = topHits.map((h) => h.payload?.fileName || 'unknown');\nreturn [{ json: { prompt, sources } }];"
+      },
+      "id": "4",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://ollama:11434/api/chat",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"qwen2.5:7b-instruct-q4_K_M\",\n  \"stream\": false,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Ban la tro ly noi bo. Phai trich dan nguon tu context.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": $json.prompt\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "5",
+      "name": "Generate Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1210,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"answer\": $json.message.content,\n  \"sources\": $('Build Prompt').item.json.sources\n}",
+        "options": {}
+      },
+      "id": "6",
+      "name": "Respond Chat",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1440,
+        280
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Chat": {
+      "main": [
+        [
+          {
+            "node": "Embedding Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embedding Query": {
+      "main": [
+        [
+          {
+            "node": "Search Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Qdrant": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Generate Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Answer": {
+      "main": [
+        [
+          {
+            "node": "Respond Chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "versionId": "1"
+}

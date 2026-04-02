@@ -82,7 +82,7 @@ For small-medium internal knowledge bases, Qdrant + local disk gives the best ba
 
 5. Configure n8n webhooks:
 
-   - POST /webhook/ingest
+   - POST /webhook/ingest-excel
    - POST /webhook/chat
 
 6. Update frontend environment (if webhook URL changed):

@@ -1,4 +1,5 @@
-import { FormEvent, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
+import type { ChangeEvent, FormEvent } from 'react'
 import './App.css'
 
 type ChatRole = 'user' | 'assistant'
@@ -37,7 +38,7 @@ function App() {
     },
   ])
 
-  const onUploadFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const onUploadFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) {
       return

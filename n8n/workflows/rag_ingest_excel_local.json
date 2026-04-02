@@ -1,0 +1,191 @@
+{
+  "name": "RAG Ingest Excel Local",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "ingest-excel",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {
+          "binaryData": true
+        }
+      },
+      "id": "1",
+      "name": "Webhook Ingest",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "binaryPropertyName": "file",
+        "options": {
+          "headerRow": true,
+          "includeEmptyCells": false
+        }
+      },
+      "id": "2",
+      "name": "Read Excel",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 2,
+      "position": [
+        430,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nconst out = [];\nfor (const item of rows) {\n  const row = item.json;\n  const parts = [];\n  for (const [k, v] of Object.entries(row)) {\n    if (v !== null && v !== undefined && String(v).trim() !== '') {\n      parts.push(`${k}: ${String(v).trim()}`);\n    }\n  }\n  const text = parts.join(' | ');\n  if (text.length > 0) {\n    out.push({\n      json: {\n        text,\n        fileName: $json.fileName || 'excel-upload',\n        sourceType: 'excel-row'\n      }\n    });\n  }\n}\nreturn out;"
+      },
+      "id": "3",
+      "name": "Build Row Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://ollama:11434/api/embeddings",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"bge-m3\",\n  \"prompt\": $json.text\n}",
+        "options": {}
+      },
+      "id": "4",
+      "name": "Create Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.item;\nconst text = $('Build Row Text').item.json.text;\nconst fileName = $('Build Row Text').item.json.fileName;\nconst vector = input.json.embedding || [];\nconst id = Date.now() + Math.floor(Math.random() * 1000000);\nreturn [{\n  json: {\n    points: [\n      {\n        id,\n        vector,\n        payload: {\n          text,\n          fileName,\n          sourceType: 'excel-row'\n        }\n      }\n    ]\n  }\n}];"
+      },
+      "id": "5",
+      "name": "Prepare Qdrant Point",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://qdrant:6333/collections/rag_docs/points?wait=true",
+        "method": "PUT",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}",
+        "options": {}
+      },
+      "id": "6",
+      "name": "Upsert Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1290,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"ok\",\n  \"chunks\": $items('Build Row Text').length\n}",
+        "options": {}
+      },
+      "id": "7",
+      "name": "Respond Ingest",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1490,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Ingest": {
+      "main": [
+        [
+          {
+            "node": "Read Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Excel": {
+      "main": [
+        [
+          {
+            "node": "Build Row Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Row Text": {
+      "main": [
+        [
+          {
+            "node": "Create Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Embedding": {
+      "main": [
+        [
+          {
+            "node": "Prepare Qdrant Point",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Qdrant Point": {
+      "main": [
+        [
+          {
+            "node": "Upsert Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Qdrant": {
+      "main": [
+        [
+          {
+            "node": "Respond Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "versionId": "1"
+}
