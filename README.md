@@ -64,29 +64,39 @@ For small-medium internal knowledge bases, Qdrant + local disk gives the best ba
 
 ## Quick start
 
-1. Start local infrastructure:
+1. Start full stack (n8n + qdrant + ollama + frontend):
 
-   docker compose up -d
+   docker compose up -d --build
 
-2. Open n8n:
+2. If you are on Ubuntu and previously ran containers with sudo, reset local volume permissions once:
+
+   sudo chown -R 1000:1000 ./storage/n8n ./storage/data ./storage/qdrant
+
+3. Open n8n:
 
    http://localhost:5678
 
-3. Start frontend:
+4. Open frontend:
 
-   cd frontend
-   npm install
-   npm run dev
+   http://localhost:5173
 
-4. Configure n8n webhooks:
+5. Configure n8n webhooks:
 
    - POST /webhook/ingest
    - POST /webhook/chat
 
-5. Update frontend environment:
+6. Update frontend environment (if webhook URL changed):
 
    - copy frontend/.env.example to frontend/.env
    - set webhook URLs if changed
+
+## Optional local frontend run (without Docker)
+
+If you do not want frontend in compose, run it manually:
+
+   cd frontend
+   npm install
+   npm run dev
 
 ## n8n workflow blueprint
 
