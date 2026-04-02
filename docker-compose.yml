@@ -66,10 +66,22 @@ services:
         condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully
+      ollama-init:
+        condition: service_completed_successfully
       qdrant:
         condition: service_started
       ollama:
         condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import json, urllib.request; d = json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/runtime')); raise SystemExit(0 if d.get('status') == 'ready' else 1)\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
     restart: unless-stopped
 
   qdrant:
@@ -118,5 +130,5 @@ services:
       - ./frontend:/app
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped

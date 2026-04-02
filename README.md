@@ -51,6 +51,8 @@ Server-side larger test model:
 docker compose up -d --build
 ```
 
+The backend now waits for Ollama model download to finish before it becomes healthy, and the frontend starts only after the backend reports `ready`.
+
 If Ubuntu permissions were previously changed by sudo:
 
 ```bash
