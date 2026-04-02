@@ -2,9 +2,11 @@ import os
 import re
 import sqlite3
 import unicodedata
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pandas as pd
@@ -194,6 +196,20 @@ def ensure_qdrant_collection(client: QdrantClient, embedder: OllamaEmbeddings) -
         collection_name=QDRANT_COLLECTION,
         vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
     )
+
+
+def fetch_ollama_models() -> tuple[set[str], bool]:
+    tags_url = f"{OLLAMA_BASE_URL}/api/tags"
+    req = Request(tags_url, method="GET")
+    try:
+        with urlopen(req, timeout=4) as response:
+            raw = response.read().decode("utf-8")
+            payload = json.loads(raw)
+            models = payload.get("models", [])
+            names = {str(item.get("name", "")) for item in models if item.get("name")}
+            return names, True
+    except Exception:
+        return set(), False
 
 
 def build_row_text(row: dict[str, Any]) -> str:
@@ -446,10 +462,25 @@ def health() -> dict[str, str]:
 
 @app.get("/api/runtime")
 def runtime_info() -> dict[str, Any]:
+    names, reachable = fetch_ollama_models()
+    chat_ready = OLLAMA_CHAT_MODEL in names
+    embed_ready = OLLAMA_EMBED_MODEL in names
+
+    if not reachable:
+        status = "ollama-unreachable"
+    elif chat_ready and embed_ready:
+        status = "ready"
+    else:
+        status = "loading-models"
+
     return {
         "chatModel": OLLAMA_CHAT_MODEL,
         "embedModel": OLLAMA_EMBED_MODEL,
         "qdrantCollection": QDRANT_COLLECTION,
+        "chatModelReady": chat_ready,
+        "embedModelReady": embed_ready,
+        "ollamaReachable": reachable,
+        "status": status,
     }
 
 

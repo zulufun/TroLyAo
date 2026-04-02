@@ -49,6 +49,10 @@ type RuntimeInfo = {
   chatModel: string
   embedModel: string
   qdrantCollection: string
+  chatModelReady: boolean
+  embedModelReady: boolean
+  ollamaReachable: boolean
+  status: 'ready' | 'loading-models' | 'ollama-unreachable' | string
 }
 
 function App() {
@@ -106,6 +110,11 @@ function App() {
     }
 
     void loadRuntimeInfo()
+    const timer = setInterval(() => {
+      void loadRuntimeInfo()
+    }, 5000)
+
+    return () => clearInterval(timer)
   }, [])
 
   const onUploadFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -288,6 +297,22 @@ function App() {
             <div className="runtime-item">
               <span>Embed model:</span>
               <strong>{runtimeInfo?.embedModel ?? 'loading...'}</strong>
+            </div>
+            <div className="runtime-status-row">
+              <span>Trang thai model:</span>
+              <strong
+                className={
+                  runtimeInfo?.status === 'ready'
+                    ? 'runtime-status ready'
+                    : 'runtime-status loading'
+                }
+              >
+                {runtimeInfo?.status === 'ready'
+                  ? 'Da san sang'
+                  : runtimeInfo?.status === 'ollama-unreachable'
+                    ? 'Khong ket noi duoc Ollama'
+                    : 'Dang tai model...'}
+              </strong>
             </div>
           </div>
         </div>

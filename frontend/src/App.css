@@ -55,6 +55,30 @@
   word-break: break-word;
 }
 
+.runtime-status-row {
+  margin-top: 2px;
+  display: grid;
+  gap: 4px;
+}
+
+.runtime-status {
+  display: inline-flex;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.runtime-status.ready {
+  background: rgba(47, 214, 133, 0.22);
+  color: #a4ffcf;
+}
+
+.runtime-status.loading {
+  background: rgba(255, 196, 73, 0.22);
+  color: #ffe0a1;
+}
+
 .menu {
   margin-top: 22px;
   display: grid;
