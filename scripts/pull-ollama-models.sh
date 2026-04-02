@@ -2,7 +2,7 @@
 set -eu
 
 : "${OLLAMA_HOST:=http://ollama:11434}"
-: "${OLLAMA_CHAT_MODEL:=qwen2.5:14b-instruct-q4_K_M}"
+: "${OLLAMA_CHAT_MODEL:=qwen2.5:1.5b-instruct-q4_K_M}"
 : "${OLLAMA_EMBED_MODEL:=bge-m3}"
 
 export OLLAMA_HOST

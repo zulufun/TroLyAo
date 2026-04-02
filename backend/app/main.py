@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama, OllamaEmbeddings
+from minio import Minio
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, Filter, MatchAny, PointStruct, VectorParams
@@ -28,8 +29,13 @@ DB_PATH = DATA_ROOT / "documents.db"
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "rag_incident_docs")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:14b-instruct-q4_K_M")
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:1.5b-instruct-q4_K_M")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
+OBJECT_STORAGE_ENDPOINT = os.getenv("OBJECT_STORAGE_ENDPOINT", "minio:9000")
+OBJECT_STORAGE_ACCESS_KEY = os.getenv("OBJECT_STORAGE_ACCESS_KEY", "minioadmin")
+OBJECT_STORAGE_SECRET_KEY = os.getenv("OBJECT_STORAGE_SECRET_KEY", "minioadmin123")
+OBJECT_STORAGE_BUCKET = os.getenv("OBJECT_STORAGE_BUCKET", "rag-documents")
+OBJECT_STORAGE_SECURE = os.getenv("OBJECT_STORAGE_SECURE", "false").lower() == "true"
 
 app = FastAPI(title="RAG Document Backend", version="1.0.0")
 
@@ -44,6 +50,7 @@ app.add_middleware(
 qdrant_client: QdrantClient | None = None
 embeddings_model: OllamaEmbeddings | None = None
 chat_model: ChatOllama | None = None
+object_storage_client: Minio | None = None
 rag_prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -113,7 +120,8 @@ def init_storage() -> None:
                 id TEXT PRIMARY KEY,
                 file_name TEXT NOT NULL,
                 stored_path TEXT NOT NULL DEFAULT '',
-                file_content BLOB,
+                object_key TEXT NOT NULL DEFAULT '',
+                object_bucket TEXT NOT NULL DEFAULT '',
                 file_mime TEXT NOT NULL DEFAULT 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 row_count INTEGER NOT NULL,
                 status TEXT NOT NULL,
@@ -125,8 +133,10 @@ def init_storage() -> None:
         )
 
         columns = {row[1] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
-        if "file_content" not in columns:
-            conn.execute("ALTER TABLE documents ADD COLUMN file_content BLOB")
+        if "object_key" not in columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN object_key TEXT NOT NULL DEFAULT ''")
+        if "object_bucket" not in columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN object_bucket TEXT NOT NULL DEFAULT ''")
         if "file_mime" not in columns:
             conn.execute(
                 "ALTER TABLE documents ADD COLUMN file_mime TEXT NOT NULL DEFAULT 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
@@ -134,25 +144,9 @@ def init_storage() -> None:
         conn.commit()
 
         legacy_rows = conn.execute(
-            "SELECT id, stored_path, file_content FROM documents WHERE file_content IS NULL OR length(file_content) = 0"
+            "SELECT id, stored_path, object_key FROM documents WHERE object_key = ''"
         ).fetchall()
-        for legacy_row in legacy_rows:
-            legacy_path = str(legacy_row["stored_path"] or "").strip()
-            if not legacy_path:
-                continue
-            legacy_file = Path(legacy_path)
-            if not legacy_file.exists():
-                continue
-            content = legacy_file.read_bytes()
-            conn.execute(
-                "UPDATE documents SET file_content = ?, stored_path = '' WHERE id = ?",
-                (content, legacy_row["id"]),
-            )
-            try:
-                legacy_file.unlink(missing_ok=True)
-            except Exception:
-                pass
-        conn.commit()
+        # Legacy rows are migrated lazily once object storage is available.
     finally:
         conn.close()
 
@@ -205,6 +199,79 @@ def row_to_document(row: sqlite3.Row) -> dict[str, Any]:
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
+
+
+def get_object_storage_client() -> Minio:
+    if object_storage_client is None:
+        raise HTTPException(status_code=500, detail="Object storage is not initialized")
+    return object_storage_client
+
+
+def object_key_for_document(document_id: str, file_name: str) -> str:
+    suffix = Path(file_name).suffix.lower() or ".xlsx"
+    return f"documents/{document_id}{suffix}"
+
+
+def ensure_bucket_exists(client: Minio) -> None:
+    if not client.bucket_exists(OBJECT_STORAGE_BUCKET):
+        client.make_bucket(OBJECT_STORAGE_BUCKET)
+
+
+def store_document_object(document_id: str, file_name: str, content: bytes, mime_type: str) -> str:
+    client = get_object_storage_client()
+    ensure_bucket_exists(client)
+    object_key = object_key_for_document(document_id, file_name)
+    client.put_object(
+        OBJECT_STORAGE_BUCKET,
+        object_key,
+        io.BytesIO(content),
+        length=len(content),
+        content_type=mime_type,
+    )
+    return object_key
+
+
+def load_document_content(row: sqlite3.Row) -> tuple[bytes, str]:
+    client = get_object_storage_client()
+    ensure_bucket_exists(client)
+
+    object_key = str(row["object_key"] or "").strip()
+    if object_key:
+        response = client.get_object(OBJECT_STORAGE_BUCKET, object_key)
+        try:
+            content = response.read()
+        finally:
+            response.close()
+            response.release_conn()
+        return content, str(row["file_mime"] or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    legacy_path = str(row["stored_path"] or "").strip()
+    if legacy_path:
+        legacy_file = Path(legacy_path)
+        if legacy_file.exists():
+            content = legacy_file.read_bytes()
+            object_key = store_document_object(
+                document_id=str(row["id"]),
+                file_name=str(row["file_name"]),
+                content=content,
+                mime_type=str(row["file_mime"] or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            )
+            conn = get_conn()
+            try:
+                conn.execute(
+                    "UPDATE documents SET object_key = ?, object_bucket = ?, stored_path = '' WHERE id = ?",
+                    (object_key, OBJECT_STORAGE_BUCKET, row["id"]),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            try:
+                legacy_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return content, str(row["file_mime"] or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    raise HTTPException(status_code=404, detail="Stored file not found")
 
 
 def require_clients() -> tuple[QdrantClient, OllamaEmbeddings, ChatOllama]:
@@ -434,34 +501,6 @@ def load_document(document_id: str) -> sqlite3.Row:
         conn.close()
 
 
-def get_document_content(row: sqlite3.Row) -> tuple[bytes, str]:
-    content = row["file_content"]
-    if content:
-        return bytes(content), str(row["file_mime"] or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    legacy_path = str(row["stored_path"] or "").strip()
-    if legacy_path:
-        legacy_file = Path(legacy_path)
-        if legacy_file.exists():
-            content_bytes = legacy_file.read_bytes()
-            conn = get_conn()
-            try:
-                conn.execute(
-                    "UPDATE documents SET file_content = ?, stored_path = '' WHERE id = ?",
-                    (content_bytes, row["id"]),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-            try:
-                legacy_file.unlink(missing_ok=True)
-            except Exception:
-                pass
-            return content_bytes, str(row["file_mime"] or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    raise HTTPException(status_code=404, detail="Stored file not found")
-
-
 def recommend_documents_logic(question: str, top_k: int) -> list[dict[str, Any]]:
     norm_question = normalize_text(question)
     q_tokens = set(norm_question.split())
@@ -510,7 +549,14 @@ class ChatRequest(BaseModel):
 @app.on_event("startup")
 def startup() -> None:
     init_storage()
-    global qdrant_client, embeddings_model, chat_model
+    global qdrant_client, embeddings_model, chat_model, object_storage_client
+    object_storage_client = Minio(
+        OBJECT_STORAGE_ENDPOINT,
+        access_key=OBJECT_STORAGE_ACCESS_KEY,
+        secret_key=OBJECT_STORAGE_SECRET_KEY,
+        secure=OBJECT_STORAGE_SECURE,
+    )
+    ensure_bucket_exists(object_storage_client)
     qdrant_client = QdrantClient(url=QDRANT_URL, timeout=30)
     embeddings_model = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
     chat_model = ChatOllama(
@@ -582,19 +628,26 @@ def upload_document(
         rows = extract_rows_from_excel_content(content)
         keywords = get_incident_keywords(rows)
         row_count = len(rows)
+        object_key = store_document_object(
+            document_id=document_id,
+            file_name=file_name,
+            content=content,
+            mime_type=file.content_type or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
         conn = get_conn()
         try:
             now = now_iso()
             conn.execute(
                 """
-                INSERT INTO documents(id, file_name, stored_path, file_content, file_mime, row_count, status, incident_keywords, created_at, updated_at)
-                VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO documents(id, file_name, stored_path, object_key, object_bucket, file_mime, row_count, status, incident_keywords, created_at, updated_at)
+                VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document_id,
                     file_name,
-                    content,
+                    object_key,
+                    OBJECT_STORAGE_BUCKET,
                     file.content_type or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     row_count,
                     "uploaded",
@@ -663,7 +716,7 @@ def delete_document(document_id: str) -> dict[str, Any]:
 @app.get("/api/documents/{document_id}/rows")
 def get_document_rows(document_id: str) -> dict[str, Any]:
     row = load_document(document_id)
-    content, _ = get_document_content(row)
+    content, _ = load_document_content(row)
     rows = extract_rows_from_excel_content(content)
     return {
         "id": row["id"],
@@ -676,7 +729,7 @@ def get_document_rows(document_id: str) -> dict[str, Any]:
 @app.post("/api/documents/{document_id}/reindex")
 def reindex_document(document_id: str) -> dict[str, Any]:
     row = load_document(document_id)
-    content, _ = get_document_content(row)
+    content, _ = load_document_content(row)
     rows = extract_rows_from_excel_content(content)
     client, embedder, _ = require_clients()
     chunks = index_document_to_qdrant(
@@ -703,7 +756,7 @@ def reindex_document(document_id: str) -> dict[str, Any]:
 @app.get("/api/documents/{document_id}/download")
 def download_document(document_id: str) -> StreamingResponse:
     row = load_document(document_id)
-    content, mime_type = get_document_content(row)
+    content, mime_type = load_document_content(row)
     return StreamingResponse(
         io.BytesIO(content),
         media_type=mime_type,

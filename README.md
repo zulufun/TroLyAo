@@ -11,7 +11,7 @@ This project is now fully n8n-free. The stack runs local-first with a Python API
 ## Architecture
 
 1. User uploads Excel from frontend to backend.
-2. Backend stores the original Excel bytes inside SQLite as BLOB, not as a file path.
+2. Backend stores the original Excel file in MinIO object storage, not as a file path.
 3. Backend parses Excel rows and indexes embeddings to Qdrant via LangChain (`OllamaEmbeddings`).
 4. User asks incident question in chat.
 5. Backend recommends relevant documents (based on `Sự cố`) and performs RAG retrieval in Qdrant.
@@ -19,10 +19,12 @@ This project is now fully n8n-free. The stack runs local-first with a Python API
 
 ## Suggested models
 
-Low-resource local machine:
+CPU-only local machine:
 
-- Chat model: qwen2.5:3b-instruct-q4_K_M
+- Chat model: qwen2.5:1.5b-instruct-q4_K_M
 - Embedding model: nomic-embed-text
+
+If you want a slightly better answer quality and still stay CPU-friendly, try `qwen2.5:3b-instruct-q4_K_M` after the 1.5B model works.
 
 Server-side larger test model:
 
@@ -31,7 +33,8 @@ Server-side larger test model:
 
 ## Storage layout
 
-- Document file bytes + metadata: `./storage/data/documents.db` (SQLite BLOB)
+- Document metadata: `./storage/data/documents.db` (SQLite)
+- Document files: MinIO bucket `rag-documents`
 - Vector index: `./storage/qdrant`
 - Ollama model cache: `./storage/ollama`
 
